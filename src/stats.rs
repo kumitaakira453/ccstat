@@ -29,7 +29,7 @@ impl Stats {
 #[derive(Debug)]
 pub struct SessionStats {
     pub date: String,
-    pub session_id_short: String,
+    pub title: String,
     pub stats: Stats,
 }
 
@@ -89,10 +89,11 @@ fn find_jsonl_files(project_dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn aggregate_entries(entries: &[SessionEntry]) -> (Stats, String, String) {
+fn aggregate_entries(entries: &[SessionEntry]) -> (Stats, String, String, Option<String>) {
     let mut stats = Stats::default();
     let mut earliest_ts = String::new();
     let mut session_id = String::new();
+    let mut title = None;
 
     for e in entries {
         stats.write_lines += e.write_lines;
@@ -109,9 +110,14 @@ fn aggregate_entries(entries: &[SessionEntry]) -> (Stats, String, String) {
                 session_id = sid.clone();
             }
         }
+        if title.is_none() {
+            if let Some(ref t) = e.title {
+                title = Some(t.clone());
+            }
+        }
     }
 
-    (stats, earliest_ts, session_id)
+    (stats, earliest_ts, session_id, title)
 }
 
 fn extract_date(ts: &str) -> String {
@@ -124,8 +130,9 @@ fn short_session_id(sid: &str) -> String {
 }
 
 pub fn collect_stats(projects_dir: &Path, project_filter: Option<&str>) -> Vec<ProjectStats> {
-    // project_name -> (session_id -> (Stats, earliest_timestamp))
-    let mut project_sessions: BTreeMap<String, BTreeMap<String, (Stats, String)>> = BTreeMap::new();
+    // project_name -> (session_id -> (Stats, earliest_timestamp, title))
+    let mut project_sessions: BTreeMap<String, BTreeMap<String, (Stats, String, Option<String>)>> =
+        BTreeMap::new();
 
     let project_dirs = match fs::read_dir(projects_dir) {
         Ok(entries) => entries,
@@ -158,13 +165,18 @@ pub fn collect_stats(projects_dir: &Path, project_filter: Option<&str>) -> Vec<P
                 continue;
             }
 
-            let (file_stats, earliest_ts, session_id) = aggregate_entries(&entries);
+            let (file_stats, earliest_ts, session_id, file_title) =
+                aggregate_entries(&entries);
             if file_stats.total() == 0 {
                 continue;
             }
 
             let sid = if session_id.is_empty() {
-                jsonl_path.file_stem().unwrap_or_default().to_string_lossy().to_string()
+                jsonl_path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
             } else {
                 session_id
             };
@@ -173,10 +185,15 @@ pub fn collect_stats(projects_dir: &Path, project_filter: Option<&str>) -> Vec<P
                 .entry(project_name.clone())
                 .or_default();
 
-            let entry = sessions.entry(sid).or_insert_with(|| (Stats::default(), earliest_ts.clone()));
+            let entry = sessions
+                .entry(sid)
+                .or_insert_with(|| (Stats::default(), earliest_ts.clone(), None));
             entry.0.add(&file_stats);
             if !earliest_ts.is_empty() && (entry.1.is_empty() || earliest_ts < entry.1) {
                 entry.1 = earliest_ts;
+            }
+            if entry.2.is_none() {
+                entry.2 = file_title;
             }
         }
     }
@@ -188,16 +205,17 @@ pub fn collect_stats(projects_dir: &Path, project_filter: Option<&str>) -> Vec<P
             let mut project_stats = Stats::default();
             let mut session_list: Vec<SessionStats> = sessions
                 .into_iter()
-                .map(|(sid, (stats, ts))| {
+                .map(|(sid, (stats, ts, title))| {
                     project_stats.add(&stats);
+                    let display_title = title.unwrap_or_else(|| short_session_id(&sid));
                     SessionStats {
                         date: extract_date(&ts),
-                        session_id_short: short_session_id(&sid),
+                        title: display_title,
                         stats,
                     }
                 })
                 .collect();
-            session_list.sort_by(|a, b| a.date.cmp(&b.date));
+            session_list.sort_by(|a, b| b.date.cmp(&a.date));
             ProjectStats {
                 name,
                 stats: project_stats,

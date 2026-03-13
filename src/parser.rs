@@ -10,6 +10,23 @@ pub struct SessionEntry {
     pub text_lines: usize,
     pub timestamp: Option<String>,
     pub session_id: Option<String>,
+    pub title: Option<String>,
+}
+
+/// Truncate string to fit within `max_width` display columns (CJK=2, ASCII=1)
+fn truncate_display(s: &str, max_width: usize) -> String {
+    let mut width = 0;
+    let mut result = String::new();
+    for c in s.chars() {
+        let cw = if c as u32 > 0x7F { 2 } else { 1 };
+        if width + cw > max_width {
+            result.push_str("...");
+            return result;
+        }
+        width += cw;
+        result.push(c);
+    }
+    result
 }
 
 fn count_lines(s: &str) -> usize {
@@ -27,6 +44,7 @@ pub fn parse_jsonl_file(path: &Path) -> Vec<SessionEntry> {
     };
     let reader = BufReader::new(file);
     let mut entries = Vec::new();
+    let mut title: Option<String> = None;
 
     for line in reader.lines() {
         let line = match line {
@@ -41,7 +59,35 @@ pub fn parse_jsonl_file(path: &Path) -> Vec<SessionEntry> {
             Err(_) => continue,
         };
 
-        if value.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+        let msg_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+        // Extract title from first meaningful user message
+        if msg_type == "user" && title.is_none() {
+            if let Some(contents) = value
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+            {
+                for content in contents {
+                    if content.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        if let Some(text) = content.get("text").and_then(|t| t.as_str()) {
+                            let text = text.trim();
+                            // Skip system/IDE context
+                            if text.is_empty() || text.starts_with('<') {
+                                continue;
+                            }
+                            let first_line = text.lines().next().unwrap_or(text);
+                            let truncated = truncate_display(first_line, 20);
+                            title = Some(truncated);
+                            break;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        if msg_type != "assistant" {
             continue;
         }
 
@@ -88,7 +134,19 @@ pub fn parse_jsonl_file(path: &Path) -> Vec<SessionEntry> {
         }
 
         if entry.write_lines > 0 || entry.edit_lines > 0 || entry.text_lines > 0 {
+            if entries.is_empty() {
+                entry.title = title.take();
+            }
             entries.push(entry);
+        }
+    }
+
+    // If title wasn't assigned yet (first entry had no title), assign to first
+    if let Some(t) = title {
+        if let Some(first) = entries.first_mut() {
+            if first.title.is_none() {
+                first.title = Some(t);
+            }
         }
     }
 

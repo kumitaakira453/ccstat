@@ -1,4 +1,6 @@
 use crate::stats::{ProjectStats, Stats};
+use comfy_table::presets::UTF8_FULL;
+use comfy_table::{Cell, CellAlignment, Color, Table};
 
 fn fmt_num(n: usize) -> String {
     let s = n.to_string();
@@ -12,76 +14,72 @@ fn fmt_num(n: usize) -> String {
     result.chars().rev().collect()
 }
 
+fn num_cell(n: usize, bg: Option<Color>) -> Cell {
+    let mut cell = Cell::new(fmt_num(n)).set_alignment(CellAlignment::Right);
+    if let Some(color) = bg {
+        cell = cell.bg(color);
+    }
+    cell
+}
+
+fn text_cell(s: &str, bg: Option<Color>) -> Cell {
+    let mut cell = Cell::new(s);
+    if let Some(color) = bg {
+        cell = cell.bg(color);
+    }
+    cell
+}
+
+fn alt_bg(row_idx: usize) -> Option<Color> {
+    if row_idx % 2 == 1 {
+        Some(Color::Rgb { r: 40, g: 40, b: 40 })
+    } else {
+        None
+    }
+}
+
 pub fn display_summary(projects: &[ProjectStats]) {
     if projects.is_empty() {
         println!("No data found.");
         return;
     }
 
-    let header = [
-        "プロジェクト",
-        "Write",
-        "Edit",
-        "チャット",
-        "コード計",
-        "総合計",
-    ];
-
-    // Calculate column widths
-    let mut col_widths: Vec<usize> = header.iter().map(|h| display_width(h)).collect();
+    let mut table = Table::new();
+    table.load_preset(UTF8_FULL);
+    table.set_header(vec![
+        Cell::new("プロジェクト"),
+        Cell::new("Write").set_alignment(CellAlignment::Right),
+        Cell::new("Edit").set_alignment(CellAlignment::Right),
+        Cell::new("チャット").set_alignment(CellAlignment::Right),
+        Cell::new("コード計").set_alignment(CellAlignment::Right),
+        Cell::new("総合計").set_alignment(CellAlignment::Right),
+    ]);
 
     let mut totals = Stats::default();
 
-    for p in projects {
-        col_widths[0] = col_widths[0].max(display_width(&p.name));
-        col_widths[1] = col_widths[1].max(fmt_num(p.stats.write_lines).len());
-        col_widths[2] = col_widths[2].max(fmt_num(p.stats.edit_lines).len());
-        col_widths[3] = col_widths[3].max(fmt_num(p.stats.text_lines).len());
-        col_widths[4] = col_widths[4].max(fmt_num(p.stats.code_total()).len());
-        col_widths[5] = col_widths[5].max(fmt_num(p.stats.total()).len());
+    for (i, p) in projects.iter().enumerate() {
+        let bg = alt_bg(i);
+        table.add_row(vec![
+            text_cell(&p.name, bg),
+            num_cell(p.stats.write_lines, bg),
+            num_cell(p.stats.edit_lines, bg),
+            num_cell(p.stats.text_lines, bg),
+            num_cell(p.stats.code_total(), bg),
+            num_cell(p.stats.total(), bg),
+        ]);
         totals.add(&p.stats);
     }
 
-    // Also consider totals row
-    col_widths[0] = col_widths[0].max(display_width("合計"));
-    col_widths[1] = col_widths[1].max(fmt_num(totals.write_lines).len());
-    col_widths[2] = col_widths[2].max(fmt_num(totals.edit_lines).len());
-    col_widths[3] = col_widths[3].max(fmt_num(totals.text_lines).len());
-    col_widths[4] = col_widths[4].max(fmt_num(totals.code_total()).len());
-    col_widths[5] = col_widths[5].max(fmt_num(totals.total()).len());
+    table.add_row(vec![
+        Cell::new("合計"),
+        num_cell(totals.write_lines, None),
+        num_cell(totals.edit_lines, None),
+        num_cell(totals.text_lines, None),
+        num_cell(totals.code_total(), None),
+        num_cell(totals.total(), None),
+    ]);
 
-    // Print table
-    print_border(&col_widths, '┌', '┬', '┐');
-    print_row_header(&header, &col_widths);
-    print_border(&col_widths, '├', '┼', '┤');
-
-    for p in projects {
-        print_data_row(
-            &p.name,
-            &[
-                fmt_num(p.stats.write_lines),
-                fmt_num(p.stats.edit_lines),
-                fmt_num(p.stats.text_lines),
-                fmt_num(p.stats.code_total()),
-                fmt_num(p.stats.total()),
-            ],
-            &col_widths,
-        );
-    }
-
-    print_border(&col_widths, '├', '┼', '┤');
-    print_data_row(
-        "合計",
-        &[
-            fmt_num(totals.write_lines),
-            fmt_num(totals.edit_lines),
-            fmt_num(totals.text_lines),
-            fmt_num(totals.code_total()),
-            fmt_num(totals.total()),
-        ],
-        &col_widths,
-    );
-    print_border(&col_widths, '└', '┴', '┘');
+    println!("{table}");
 }
 
 pub fn display_sessions(projects: &[ProjectStats]) {
@@ -96,81 +94,39 @@ pub fn display_sessions(projects: &[ProjectStats]) {
             p.name,
             p.sessions.len()
         );
-        println!(
-            "  {:<12} {:<12} {:>8} {:>8} {:>8} {:>8}",
-            "日付", "Session", "Write", "Edit", "チャット", "合計"
-        );
 
-        for s in &p.sessions {
-            println!(
-                "  {:<12} {:<12} {:>8} {:>8} {:>8} {:>8}",
-                s.date,
-                s.session_id_short,
-                fmt_num(s.stats.write_lines),
-                fmt_num(s.stats.edit_lines),
-                fmt_num(s.stats.text_lines),
-                fmt_num(s.stats.total()),
-            );
+        let mut table = Table::new();
+        table.load_preset(UTF8_FULL);
+        table.set_header(vec![
+            Cell::new("日付"),
+            Cell::new("タイトル"),
+            Cell::new("Write").set_alignment(CellAlignment::Right),
+            Cell::new("Edit").set_alignment(CellAlignment::Right),
+            Cell::new("チャット").set_alignment(CellAlignment::Right),
+            Cell::new("合計").set_alignment(CellAlignment::Right),
+        ]);
+
+        for (i, s) in p.sessions.iter().enumerate() {
+            let bg = alt_bg(i);
+            table.add_row(vec![
+                text_cell(&s.date, bg),
+                text_cell(&s.title, bg),
+                num_cell(s.stats.write_lines, bg),
+                num_cell(s.stats.edit_lines, bg),
+                num_cell(s.stats.text_lines, bg),
+                num_cell(s.stats.total(), bg),
+            ]);
         }
 
-        println!(
-            "  {:<12} {:<12} {:>8} {:>8} {:>8} {:>8}",
-            "", "合計",
-            fmt_num(p.stats.write_lines),
-            fmt_num(p.stats.edit_lines),
-            fmt_num(p.stats.text_lines),
-            fmt_num(p.stats.total()),
-        );
-    }
-}
+        table.add_row(vec![
+            Cell::new(""),
+            Cell::new("合計"),
+            num_cell(p.stats.write_lines, None),
+            num_cell(p.stats.edit_lines, None),
+            num_cell(p.stats.text_lines, None),
+            num_cell(p.stats.total(), None),
+        ]);
 
-/// Calculate display width accounting for multi-byte characters (CJK = width 2)
-fn display_width(s: &str) -> usize {
-    s.chars()
-        .map(|c| if c as u32 > 0x7F { 2 } else { 1 })
-        .sum()
-}
-
-/// Pad string to target display width
-fn pad_to_width(s: &str, target: usize) -> String {
-    let w = display_width(s);
-    if w >= target {
-        s.to_string()
-    } else {
-        format!("{}{}", s, " ".repeat(target - w))
+        println!("{table}");
     }
-}
-
-fn print_border(widths: &[usize], left: char, mid: char, right: char) {
-    print!("{}", left);
-    for (i, w) in widths.iter().enumerate() {
-        print!("{}", "─".repeat(w + 2));
-        if i < widths.len() - 1 {
-            print!("{}", mid);
-        }
-    }
-    println!("{}", right);
-}
-
-fn print_row_header(cells: &[&str], widths: &[usize]) {
-    print!("│");
-    for (i, cell) in cells.iter().enumerate() {
-        if i == 0 {
-            print!(" {} │", pad_to_width(cell, widths[i]));
-        } else {
-            let val = cell.to_string();
-            let pad = widths[i].saturating_sub(display_width(&val));
-            print!(" {}{} │", " ".repeat(pad), val);
-        }
-    }
-    println!();
-}
-
-fn print_data_row(name: &str, values: &[String], widths: &[usize]) {
-    print!("│ {} │", pad_to_width(name, widths[0]));
-    for (i, val) in values.iter().enumerate() {
-        let pad = widths[i + 1].saturating_sub(val.len());
-        print!(" {}{} │", " ".repeat(pad), val);
-    }
-    println!();
 }

@@ -1,0 +1,20 @@
+version: 2
+
+builds:
+  - builder: prebuilt
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    prebuilt:
+      path: dist/ccstat_{{ .Os }}_{{ .Arch }}/ccstat
+
+brews:
+  - repository:
+      owner: kumitaakira453
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/kumitaakira453/ccstat"
+    description: "Claude Code session statistics"

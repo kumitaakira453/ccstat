@@ -15,20 +15,16 @@ jobs:
         include:
           - target: x86_64-apple-darwin
             os: macos-latest
-            goos: darwin
-            goarch: amd64
+            asset: ccstat_darwin_amd64.tar.gz
           - target: aarch64-apple-darwin
             os: macos-latest
-            goos: darwin
-            goarch: arm64
+            asset: ccstat_darwin_arm64.tar.gz
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            goos: linux
-            goarch: amd64
+            asset: ccstat_linux_amd64.tar.gz
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            goos: linux
-            goarch: arm64
+            asset: ccstat_linux_arm64.tar.gz
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -47,32 +43,113 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
+      - name: Package
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../${{ matrix.asset }} ccstat
+          cd ../../..
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ccstat_${{ matrix.goos }}_${{ matrix.goarch }}
-          path: target/${{ matrix.target }}/release/ccstat
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
 
   release:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
 
-      - name: Set executable permissions
-        run: chmod +x dist/ccstat_*/ccstat
-
-      - uses: goreleaser/goreleaser-action@v6
-        with:
-          version: "~> v2"
-          args: release --clean
+      - name: Create release and upload assets
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            dist/**/*.tar.gz
+
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update Homebrew formula
+        env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          REPO="kumitaakira453/ccstat"
+          TAP_REPO="kumitaakira453/homebrew-tap"
+
+          # Download the arm64 darwin tarball to compute sha256
+          DARWIN_ARM64_URL="https://github.com/${REPO}/releases/download/${TAG}/ccstat_darwin_arm64.tar.gz"
+          DARWIN_AMD64_URL="https://github.com/${REPO}/releases/download/${TAG}/ccstat_darwin_amd64.tar.gz"
+          LINUX_AMD64_URL="https://github.com/${REPO}/releases/download/${TAG}/ccstat_linux_amd64.tar.gz"
+          LINUX_ARM64_URL="https://github.com/${REPO}/releases/download/${TAG}/ccstat_linux_arm64.tar.gz"
+
+          curl -sL "$DARWIN_ARM64_URL" -o darwin_arm64.tar.gz
+          curl -sL "$DARWIN_AMD64_URL" -o darwin_amd64.tar.gz
+          curl -sL "$LINUX_AMD64_URL" -o linux_amd64.tar.gz
+          curl -sL "$LINUX_ARM64_URL" -o linux_arm64.tar.gz
+
+          SHA_DARWIN_ARM64=$(sha256sum darwin_arm64.tar.gz | cut -d' ' -f1)
+          SHA_DARWIN_AMD64=$(sha256sum darwin_amd64.tar.gz | cut -d' ' -f1)
+          SHA_LINUX_AMD64=$(sha256sum linux_amd64.tar.gz | cut -d' ' -f1)
+          SHA_LINUX_ARM64=$(sha256sum linux_arm64.tar.gz | cut -d' ' -f1)
+
+          # Generate formula
+          FORMULA=$(cat <<FORMULA_EOF
+          class Ccstat < Formula
+            desc "Claude Code session statistics"
+            homepage "https://github.com/${REPO}"
+            version "${VERSION}"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "${DARWIN_ARM64_URL}"
+                sha256 "${SHA_DARWIN_ARM64}"
+              else
+                url "${DARWIN_AMD64_URL}"
+                sha256 "${SHA_DARWIN_AMD64}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "${LINUX_ARM64_URL}"
+                sha256 "${SHA_LINUX_ARM64}"
+              else
+                url "${LINUX_AMD64_URL}"
+                sha256 "${SHA_LINUX_AMD64}"
+              end
+            end
+
+            def install
+              bin.install "ccstat"
+            end
+
+            test do
+              assert_match "ccstat", shell_output("#{bin}/ccstat --help")
+            end
+          end
+          FORMULA_EOF
+          )
+
+          # Push formula to tap repo
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP_REPO}.git" tap
+          mkdir -p tap/Formula
+          echo "$FORMULA" > tap/Formula/ccstat.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/ccstat.rb
+          git commit -m "Update ccstat to ${VERSION}" || exit 0
+          git push
